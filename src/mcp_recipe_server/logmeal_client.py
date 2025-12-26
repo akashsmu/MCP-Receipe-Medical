@@ -77,18 +77,35 @@ class LogMealClient:
         """
         try:
             url = f"{self.base_url}/image/segmentation/complete"
-            payload = {
-                "image": image_base64
+            
+            # Decode base64 to bytes for multipart upload
+            image_bytes = base64.b64decode(image_base64)
+            
+            # Prepare headers (exclude Content-Type to let requests handle boundary)
+            headers = {
+                'Authorization': self.headers['Authorization']
             }
             
-            response = requests.post(url, json=payload, headers=self.headers)
+            # Send as multipart/form-data
+            files = {
+                'image': ('image.jpg', image_bytes, 'image/jpeg')
+            }
+            
+            response = requests.post(url, files=files, headers=headers)
+            
+            # Check for error response first
+            if not response.ok:
+                logger.error(f"API Error Response: {response.text}")
+            
             response.raise_for_status()
             
             result = response.json()
             return {
                 "success": True,
                 "recognition_results": result.get('recognition_results', []),
-                "image_analysis_id": result.get('image_analysis_id')
+                "segmentation_results": result.get('segmentation_results', []),
+                "image_analysis_id": result.get('image_analysis_id'),
+                "raw_response": result # helpful for debugging
             }
             
         except requests.exceptions.RequestException as e:
@@ -147,51 +164,78 @@ class LogMealClient:
         logger.info("Recognizing food from base64 encoded image")
         return self._process_base64_image(image_base64)
 
-    def get_nutrition_info(self, food_items: List[str]) -> Dict[str, Any]:
+    def get_recipe_ingredients(self, recipe_id: str) -> Dict[str, Any]:
         """
-        Get nutrition information for food items.
+        Get ingredients for a specific recipe by ID.
         
         Args:
-            food_items: List of food item names
+            recipe_id: The ID of the recipe/dish
             
         Returns:
-            Nutrition information
+            Dictionary containing ingredient details
         """
         try:
-            logger.info(f"Getting nutrition info for {len(food_items)} items: {food_items}")
+            logger.info(f"Getting ingredients for recipe ID: {recipe_id}")
             
-            url = f"{self.base_url}/nutrition"
+            url = f"{self.base_url}/nutrition/recipe/ingredients"
             payload = {
-                "food_items": food_items
+                "id": recipe_id
             }
             
             response = requests.post(url, json=payload, headers=self.headers)
             response.raise_for_status()
             
             result = response.json()
-            logger.info("Nutrition analysis successful")
-            
             return {
                 "success": True,
-                "nutrition_info": result
+                "recipe_id": recipe_id,
+                "ingredients": result
             }
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Nutrition API request failed: {e}")
+            logger.error(f"Recipe ingredients request failed: {e}")
             return {
                 "success": False,
-                "error": f"Nutrition analysis failed: {str(e)}"
+                "error": f"Failed to get ingredients: {str(e)}"
             }
-        except Exception as e:
-            logger.error(f"Nutrition analysis failed: {e}")
-            return {
-                "success": False,
-                "error": f"Nutrition analysis failed: {str(e)}"
-            }
+
+    def _extract_top_food_item(self, segmentation_results: List[Dict]) -> Optional[Dict]:
+        """
+        Extract the food item with the highest probability from nested segmentation results.
+        
+        Args:
+            segmentation_results: List of segmentation result dictionaries
+            
+        Returns:
+            Dictionary of the best match item or None
+        """
+        best_item = None
+        highest_prob = -1.0
+        
+        # Helper to recursively search for best candidate
+        def check_candidates(candidates):
+            nonlocal best_item, highest_prob
+            for candidate in candidates:
+                # Check current candidate
+                prob = candidate.get('prob', 0)
+                if prob > highest_prob:
+                    highest_prob = prob
+                    best_item = candidate
+                
+                # Check subclasses if they exist (sometimes more specific matches are nested)
+                if 'subclasses' in candidate and candidate['subclasses']:
+                    check_candidates(candidate['subclasses'])
+
+        # Start search
+        for segment in segmentation_results:
+            if 'recognition_results' in segment:
+                check_candidates(segment['recognition_results'])
+        
+        return best_item
 
     def analyze_food_image(self, image_path: str) -> Dict[str, Any]:
         """
-        Complete analysis: recognize food and get nutrition info from file path.
+        Complete analysis: recognize food, find best match, and get ingredients.
         
         Args:
             image_path: Path to the image file
@@ -199,40 +243,48 @@ class LogMealClient:
         Returns:
             Complete analysis results
         """
-        # First recognize food items
-        recognition_result = self.recognize_food(image_path)
-        if not recognition_result["success"]:
-            return recognition_result
+        # First recognize food items (segmentation)
+        recognition_response = self.recognize_food(image_path)
+        if not recognition_response["success"]:
+            return recognition_response
         
-        # Extract food names
-        food_items = []
-        for item in recognition_result.get("recognition_results", []):
-            food_name = item.get("name")
-            if food_name:
-                food_items.append(food_name)
+        # Extract segmentation results (handling both direct and nested keys if API varies)
+        segmentation_results = recognition_response.get("recognition_results", [])
+        if not segmentation_results and "segmentation_results" in recognition_response:
+             segmentation_results = recognition_response["segmentation_results"]
+             
+        # Find best match
+        best_item = self._extract_top_food_item(segmentation_results)
         
-        if not food_items:
+        if not best_item:
             return {
                 "success": True,
-                "recognized_foods": [],
-                "nutrition_info": {},
-                "message": "No specific food items recognized"
+                "recognized_dish": None,
+                "message": "No specific food items recognized with sufficient confidence"
             }
+            
+        logger.info(f"Top detection: {best_item.get('name')} ({best_item.get('prob', 0):.2f})")
         
-        # Get nutrition information
-        nutrition_result = self.get_nutrition_info(food_items)
+        # Get ingredients for this specific dish
+        ingredients_result = {}
+        if 'id' in best_item:
+            ingredients_result = self.get_recipe_ingredients(best_item['id'])
         
         return {
             "success": True,
-            "recognized_foods": food_items,
-            "recognition_details": recognition_result.get("recognition_results", []),
-            "nutrition_info": nutrition_result.get("nutrition_info", {}) if nutrition_result["success"] else {},
-            "image_analysis_id": recognition_result.get("image_analysis_id")
+            "recognized_dish": {
+                "name": best_item.get('name'),
+                "id": best_item.get('id'),
+                "confidence": best_item.get('prob'),
+                "food_family": best_item.get('foodFamily', [])
+            },
+            "ingredients_info": ingredients_result.get("ingredients", {}) if ingredients_result.get("success") else {},
+            "image_analysis_id": recognition_response.get("image_analysis_id")
         }
 
     def analyze_food_from_base64(self, image_base64: str) -> Dict[str, Any]:
         """
-        Complete analysis: recognize food and get nutrition info from base64.
+        Complete analysis: recognize food, find best match, and get ingredients from base64.
         
         Args:
             image_base64: Base64 encoded image string
@@ -241,32 +293,72 @@ class LogMealClient:
             Complete analysis results
         """
         # First recognize food items
-        recognition_result = self.recognize_food_from_base64(image_base64)
-        if not recognition_result["success"]:
-            return recognition_result
+        recognition_response = self.recognize_food_from_base64(image_base64)
+        if not recognition_response["success"]:
+            return recognition_response
         
-        # Extract food names
-        food_items = []
-        for item in recognition_result.get("recognition_results", []):
-            food_name = item.get("name")
-            if food_name:
-                food_items.append(food_name)
+        # Extract segmentation results (robust checking)
+        segmentation_results = recognition_response.get("recognition_results", [])
+        # In the provided sample, 'segmentation_results' is at top level
+        # But our client _process_base64_image currently puts raw JSON into 'recognition_results' key 
+        # Wait, check _process_base64_image implementation:
+        # It returns {"recognition_results": result.get('recognition_results', [])...}
+        # But the raw LogMeal response has 'segmentation_results' at root, usually.
+        # Let's verify what `result` is in _process_base64_image. 
+        # It calls result = response.json(). 
+        # If response has 'segmentation_results', we should pass that potentially.
+        # I will patch _process_base64_image to include raw response or verify where segmentation_results are.
+        # Based on user payload: root has "segmentation_results". "recognition_results" is NOT at root.
+        # So `result.get('recognition_results', [])` in `_process_base64_image` will be EMPTY!
+        # logic error in _process_base64_image needs fixing first or concurrent with this.
         
-        if not food_items:
+        # ACTUALLY, I must fix _process_base64_image to return the 'segmentation_results' correctly.
+        # I will assume I fix that in this same replacement block or separate.
+        # Since I can replace lines 207-287, I can't reach line 100 easily without a huge block.
+        # I will use multi_replace to handle both if needed, OR just handle the logic here 
+        # assuming I fix the other method next. 
+        # But `recognize_food_from_base64` calls `_process_base64_image`.
+        # If `_process_base64_image` drops the data, I can't recover it here.
+        # I MUST fix `_process_base64_image` first or using AllowMultiple?
+        # I'll do a separate tool call to fix `_process_base64_image` to return the full raw result,
+        # verifying the flow.
+        pass # Placeholder for thought process.
+        
+        # Since I'm in the middle of generating the replacement, I will assume 
+        # I will Fix `_process_base64_image` in the NEXT step.
+        # For this function, I will write code that EXPECTS `recognition_response` to contain the raw data
+        # or properly mapped data.
+        
+        # Let's write this function assuming `recognition_response` WILL contain 'segmentation_results'.
+        
+        segmentation_results = recognition_response.get("segmentation_results", [])
+        if not segmentation_results:
+             # Fallback if mapped to recognition_results
+             segmentation_results = recognition_response.get("recognition_results", [])
+
+        # Find best match
+        best_item = self._extract_top_food_item(segmentation_results)
+        
+        if not best_item:
             return {
                 "success": True,
-                "recognized_foods": [],
-                "nutrition_info": {},
-                "message": "No specific food items recognized"
+                "recognized_dish": None,
+                "message": "No specific food items recognized with sufficient confidence"
             }
         
-        # Get nutrition information
-        nutrition_result = self.get_nutrition_info(food_items)
+        # Get ingredients for this specific dish
+        ingredients_result = {}
+        if 'id' in best_item:
+            ingredients_result = self.get_recipe_ingredients(best_item['id'])
         
         return {
             "success": True,
-            "recognized_foods": food_items,
-            "recognition_details": recognition_result.get("recognition_results", []),
-            "nutrition_info": nutrition_result.get("nutrition_info", {}) if nutrition_result["success"] else {},
-            "image_analysis_id": recognition_result.get("image_analysis_id")
+            "recognized_dish": {
+                "name": best_item.get('name'),
+                "id": best_item.get('id'),
+                "confidence": best_item.get('prob'),
+                "food_family": best_item.get('foodFamily', [])
+            },
+            "ingredients_info": ingredients_result.get("ingredients", {}) if ingredients_result.get("success") else {},
+            "image_analysis_id": recognition_response.get("image_analysis_id")
         }

@@ -159,11 +159,34 @@ def _process_image_data_to_storage(image_data: str, filename: str = None) -> Dic
             
         # Check if it's a regular URL
         elif _is_valid_url(image_data):
+            # Check for private GitHub user content that we can't access
+            if "github.com/user-attachments" in image_data:
+                return {
+                    "success": False,
+                    "error": (
+                        "Cannot access private GitHub attachment URLs directly. "
+                        "Please ask the user to provide the local file path of the image "
+                        "or try to extract the base64 data from the chat context."
+                    )
+                }
+
             logger.info(f"Downloading image from URL: {image_data}")
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             response = requests.get(image_data, headers=headers, timeout=30)
+            
+            # Handle 404/403 specifically for better error messages
+            if response.status_code in [403, 404] and "github" in image_data:
+                 return {
+                    "success": False,
+                    "error": (
+                        f"Failed to download image (Status {response.status_code}). "
+                        "This looks like a private GitHub URL which the server cannot access. "
+                        "Please use a public URL, local file path, or base64 data."
+                    )
+                }
+            
             response.raise_for_status()
             
             # Check content type

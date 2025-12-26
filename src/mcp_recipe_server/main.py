@@ -48,18 +48,18 @@ except ImportError as e:
 mcp = FastMCP("Enhanced Recipe Server", instructions="""
 CRITICAL SYSTEM INSTRUCTIONS FOR IMAGE HANDLING:
 
-1. STORAGE-BASED WORKFLOW (RECOMMENDED):
-   - For URLs: Use `analyze_food_image_url`
-   - For uploaded images in Claude: Use `analyze_claude_upload`
+1. IMAGE UPLOADS FROM CHAT:
+   - ⚠️ DO NOT use the URL if it is a private link (e.g., `github.com/user-attachments`). The server CANNOT access these.
+   - instead, ask the user for the **local file path** of the image.
+   - OR, if you can extract the image as base64, pass that to `analyze_food_image`.
+
+2. STORAGE-BASED WORKFLOW:
+   - For public URLs: Use `analyze_food_image_url`
    - For file paths: Use `analyze_food_image`
    
-2. IMAGE MANAGEMENT:
+3. IMAGE MANAGEMENT:
    - List saved images: `list_saved_images`
    - All images are saved to: resources/images/
-
-3. SIMPLE USAGE:
-   - "Analyze this food image: [URL]"
-   - Or just upload an image in chat
 """)
 
 def integrate_all_tools():
