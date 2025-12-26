@@ -323,6 +323,18 @@ async def analyze_food_image_impl(image_input: str) -> Dict[str, Any]:
             logger.info(f"Detected file path input: {image_input}")
             return await analyze_food_image_path_impl(image_input)
 
+async def recommend_logmeal_dish_impl() -> Dict[str, Any]:
+    """Get recommended dishes from LogMeal API."""
+    try:
+        logger.info("Getting dish recommendations from LogMeal")
+        return logmeal_client.recommend_dish()
+    except Exception as e:
+        logger.error(f"Failed to get recommendations: {e}")
+        return {
+            "success": False,
+            "error": f"Failed to get recommendations: {str(e)}"
+        }
+
 
 # --- MCP Tool Registration ---
 
@@ -558,6 +570,14 @@ def init_nutrition_tools(mcp: FastMCP):
                 "success": False,
                 "error": f"Nutrition estimation failed: {str(e)}"
             }
+
+    @mcp.tool()
+    async def recommend_logmeal_dish() -> Dict[str, Any]:
+        """
+        Get recommended dishes from LogMeal.
+        Useful for discovering new food ideas.
+        """
+        return await recommend_logmeal_dish_impl()
 
     # MCP Resource to serve stored images
     @mcp.resource("image://{filename}")

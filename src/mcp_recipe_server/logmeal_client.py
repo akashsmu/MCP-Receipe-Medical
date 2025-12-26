@@ -199,6 +199,34 @@ class LogMealClient:
                 "error": f"Failed to get ingredients: {str(e)}"
             }
 
+    def recommend_dish(self) -> Dict[str, Any]:
+        """
+        Get recommended dishes from LogMeal.
+        
+        Returns:
+            List of recommended dishes
+        """
+        try:
+            logger.info("Getting dish recommendations")
+            
+            url = f"{self.base_url}/recommend/dish"
+            
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            
+            result = response.json()
+            return {
+                "success": True,
+                "recommendations": result
+            }
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Recommendation request failed: {e}")
+            return {
+                "success": False,
+                "error": f"Failed to get recommendations: {str(e)}"
+            }
+
     def _extract_top_food_item(self, segmentation_results: List[Dict]) -> Optional[Dict]:
         """
         Extract the food item with the highest probability from nested segmentation results.
